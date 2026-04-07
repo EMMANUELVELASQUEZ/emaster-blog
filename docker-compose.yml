@@ -1,0 +1,108 @@
+version: '3.9'
+
+services:
+  # ──────────────────────────────────────────────
+  # MongoDB
+  # ──────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: blogplatform_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: blogplatform
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    networks:
+      - blogplatform_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "27017:27017"  # Remove in production
+
+  # ──────────────────────────────────────────────
+  # Backend API
+  # ──────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: blogplatform_api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/blogplatform
+      NODE_ENV: development
+    volumes:
+      - ./backend/src:/app/src:delegated
+      - ./backend/uploads:/app/uploads
+      - /app/node_modules
+    ports:
+      - "5000:5000"
+    networks:
+      - blogplatform_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ──────────────────────────────────────────────
+  # Frontend (Vite dev server)
+  # ──────────────────────────────────────────────
+  client:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: blogplatform_client
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      VITE_API_URL: http://localhost:5000/api/v1
+    volumes:
+      - ./frontend/src:/app/src:delegated
+      - ./frontend/public:/app/public
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - blogplatform_net
+
+  # ──────────────────────────────────────────────
+  # Nginx (Reverse proxy - production only)
+  # ──────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: blogplatform_nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - client
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - blogplatform_net
+    profiles:
+      - production
+
+volumes:
+  mongo_data:
+    driver: local
+
+networks:
+  blogplatform_net:
+    driver: bridge
